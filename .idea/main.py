@@ -29,7 +29,7 @@ ingredient_data = [
 df = pd.DataFrame(ingredient_data)
 df['total_cost'] = df['unit_cost'] * df['quantity_used']
 
-# Calculate calues
+# Calculate values
 cookie_yield = 50
 cookie_price = 0.5
 revenue = cookie_price * cookie_yield
