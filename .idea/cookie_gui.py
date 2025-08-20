@@ -9,7 +9,7 @@ from pathlib import Path
 import json
 import sv_ttk
 import darkdetect
-
+import calculations
 class CookieCostApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -42,6 +42,9 @@ class CookieCostApp(tk.Tk):
 
         # Save config on window close
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        # initialize calculator
+        self.calc = calculations.Calculator()
 
         # Also auto-save when the checkbox is toggled
         self.ask_before_delete.trace_add("write", lambda *_: self._save_config())
@@ -91,7 +94,7 @@ class CookieCostApp(tk.Tk):
         self.tree.heading("name", text="Ingredient")
         self.tree.heading("unit_cost", text="Unit Cost ($)")
         self.tree.heading("quantity_used", text="Qty Used")
-        self.tree.heading("total_cost", text="Total Cost ($)")
+        self.tree.heading("total_cost", text="Ingredient Cost ($)")
         self.tree.column("name", width=180, anchor="w")
         self.tree.column("unit_cost", width=120, anchor="e")
         self.tree.column("quantity_used", width=100, anchor="e")
@@ -204,6 +207,9 @@ class CookieCostApp(tk.Tk):
 
     def _parse_float(self, text, field_name):
         try:
+            if float(text) < 0:
+                messagebox.showerror("Invalid input", f"'{field_name}' must be positive")
+                raise Exception("Invalid input, must be positive number")
             return float(text)
         except ValueError:
             messagebox.showerror("Invalid input", f"'{field_name}' must be a number.")
@@ -248,22 +254,16 @@ class CookieCostApp(tk.Tk):
         return sel[0] if sel else None
 
     def _upsert_df_row(self, name, unit_cost, quantity_used):
-        # Insert or update by name
-        if (self.df["name"] == name).any():
-            idx = self.df.index[self.df["name"] == name][0]
+        match = (self.df["name"] == name)
+        if match.any():
+            idx = self.df.index[match][0]
             self.df.at[idx, "unit_cost"] = unit_cost
             self.df.at[idx, "quantity_used"] = quantity_used
         else:
-            self.df.loc[len(self.df)] = {
-                "name": name,
-                "unit_cost": unit_cost,
-                "quantity_used": quantity_used,
-                "total_cost": 0.0,
-            }
-        # recompute total for row
-        idx = self.df.index[self.df["name"] == name][0]
-        self.df.at[idx, "total_cost"] = self.df.at[idx, "unit_cost"] * self.df.at[idx, "quantity_used"]
-
+            idx = len(self.df)
+            self.df.loc[idx] = {"name": name, "unit_cost": unit_cost,
+                                "quantity_used": quantity_used, "total_cost": 0.0}
+        self.df.at[idx, "total_cost"] = unit_cost * quantity_used
     def _begin_cell_edit(self, event):
         if self.tree.identify("region", event.x, event.y) != "cell":
             return
@@ -354,6 +354,9 @@ class CookieCostApp(tk.Tk):
             except ValueError:
                 messagebox.showerror("Invalid input", "Unit cost must be a number.")
                 return self._cancel_cell_edit()
+            if val < 0:
+                messagebox.showerror("Invalid input", "Unit cost must be positive.")
+                return self._cancel_cell_edit()
             if (self.df["name"] == old_name).any():
                 idx = self.df.index[self.df["name"] == old_name][0]
                 self.df.at[idx, "unit_cost"] = val
@@ -363,6 +366,9 @@ class CookieCostApp(tk.Tk):
                 val = float(new_text)
             except ValueError:
                 messagebox.showerror("Invalid input", "Quantity used must be a number.")
+                return self._cancel_cell_edit()
+            if val < 0:
+                messagebox.showerror("Invalid input", "Quantity used must be positive.")
                 return self._cancel_cell_edit()
             if (self.df["name"] == old_name).any():
                 idx = self.df.index[self.df["name"] == old_name][0]
@@ -388,9 +394,7 @@ class CookieCostApp(tk.Tk):
         # Close any active cell editor before redrawing rows
         self._cancel_cell_edit()
         # Recompute totals column just in case
-        if not self.df.empty:
-            self.df["total_cost"] = self.df["unit_cost"] * self.df["quantity_used"]
-        total_cost = float(self.df["total_cost"].sum()) if not self.df.empty else 0.0
+        total_cost = self.calc.calculate_total_cost(self.df)
 
         # Parse yield/price (with validation)
         try:
@@ -399,9 +403,9 @@ class CookieCostApp(tk.Tk):
         except Exception:
             return
 
-        revenue = price * yld
-        profit = revenue - total_cost
-        profit_per_cookie = (profit / yld) if yld else 0.0
+        revenue = self.calc.calculate_revenue(price, yld)
+        profit = self.calc.calculate_profit(revenue, total_cost)
+        profit_per_cookie = self.calc.profit_per_cookie(revenue, total_cost)
 
         # Update labels
         self.total_cost_lbl.config(text=f"Total cost: ${total_cost:,.2f}")
@@ -418,8 +422,8 @@ class CookieCostApp(tk.Tk):
                 "end",
                 values=(
                     row["name"],
-                    f"{row['unit_cost']:.6f}",
-                    f"{row['quantity_used']:.6f}",
+                    f"{row['unit_cost']:.2f}",
+                    f"{row['quantity_used']:.2f}",
                     f"{row['total_cost']:.2f}",
                 ),
             )
@@ -439,8 +443,8 @@ class CookieCostApp(tk.Tk):
         except Exception:
             messagebox.showerror("Invalid input", "Fix price/yield values first.")
             return
-        revenue = price * yld
-        profit = revenue - total_cost
+        revenue = self.calc.calculate_revenue(price, yld)
+        profit = self.calc.calculate_profit(revenue, total_cost)
 
         labels = ["Total Cost", "Total Revenue", "Profit"]
         values = [total_cost, revenue, profit]
